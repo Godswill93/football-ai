@@ -22,6 +22,18 @@ def send_telegram(message):
         "text": message
     }
 
+    try:
+        response = requests.post(url, data=data, timeout=30)
+
+        if response.status_code != 200:
+            print("Telegram ERROR:", response.text)
+        else:
+            print("Telegram sent successfully")
+
+    except Exception as e:
+        print("Telegram failed:", e)
+    
+
     response = requests.post(url, data=data, timeout=30)
     print("Telegram status:", response.status_code)
     print("Telegram response:", response.text)
