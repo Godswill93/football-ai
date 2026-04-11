@@ -21,7 +21,10 @@ def send_telegram(message):
         "chat_id": CHAT_ID,
         "text": message
     }
-    requests.post(url, data=data, timeout=30)
+
+    response = requests.post(url, data=data, timeout=30)
+    print("Telegram status:", response.status_code)
+    print("Telegram response:", response.text)
 
 
 def get_current_season():
