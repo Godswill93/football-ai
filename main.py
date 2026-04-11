@@ -258,17 +258,17 @@ for fixture in fixtures:
 
     if (
         main_market == "Home Win"
-        and confidence >= 65
-        and rating_gap >= 30
-        and form_gap >= 3
+        and confidence >= 62
+        and rating_gap >= 25
+        and form_gap >= 2
     ):
         passes_filter = True
 
     if (
         main_market == "Away Win"
-        and confidence >= 65
-        and rating_gap >= 30
-        and form_gap <= -3
+        and confidence >= 62
+        and rating_gap >= 25
+        and form_gap <= -2
     ):
         passes_filter = True
 
