@@ -231,9 +231,7 @@ for raw_home, raw_away, home_team, away_team, fixture_date in fixtures:
 results = sorted(results, key=lambda x: x[7], reverse=True)
 
 if not results:
-    message = "No strong live-fixture picks found today."
-    print(message)
-    send_telegram(message)
+    print("No strong live-fixture picks found today.")
 else:
     for (
         raw_home,
