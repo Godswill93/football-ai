@@ -1,5 +1,6 @@
 import os
-from datetime import datetime
+from datetime import datetime, timezone
+import json
 import pandas as pd
 import requests
 from model import predict_score
@@ -14,6 +15,8 @@ if not BOT_TOKEN or not CHAT_ID:
 if not API_FOOTBALL_KEY:
     raise ValueError("Missing API_FOOTBALL_KEY")
 
+SENT_FIXTURES_FILE = "sent_fixtures.json"
+
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -24,24 +27,17 @@ def send_telegram(message):
 
     try:
         response = requests.post(url, data=data, timeout=30)
-
         if response.status_code != 200:
             print("Telegram ERROR:", response.text)
         else:
             print("Telegram sent successfully")
-
     except Exception as e:
         print("Telegram failed:", e)
-    
-
-    response = requests.post(url, data=data, timeout=30)
-    print("Telegram status:", response.status_code)
-    print("Telegram response:", response.text)
 
 
 def get_current_season():
-    today = datetime.utcnow()
-    return today.year if today.month >= 7 else today.year - 1
+    now = datetime.now(timezone.utc)
+    return now.year if now.month >= 7 else now.year - 1
 
 
 def normalize_team_name(name):
@@ -49,14 +45,13 @@ def normalize_team_name(name):
         "Manchester City": "Man City",
         "Manchester United": "Man United",
         "Nottingham Forest": "Nott'm Forest",
-        "Newcastle": "Newcastle",
-        "Tottenham": "Tottenham",
-        "Brighton": "Brighton",
         "Brighton & Hove Albion": "Brighton",
         "Wolverhampton Wanderers": "Wolves",
         "West Ham United": "West Ham",
-        "Leicester": "Leicester",
-        "Ipswich": "Ipswich",
+        "Newcastle United": "Newcastle",
+        "Tottenham Hotspur": "Tottenham",
+        "Leicester City": "Leicester",
+        "Ipswich Town": "Ipswich",
     }
     return mapping.get(name, name)
 
@@ -69,7 +64,7 @@ def get_upcoming_fixtures():
         "x-apisports-key": API_FOOTBALL_KEY
     }
     params = {
-        "league": 39,      # Premier League
+        "league": 39,   # Premier League
         "season": season,
         "next": 10
     }
@@ -83,15 +78,56 @@ def get_upcoming_fixtures():
     for item in data.get("response", []):
         home_raw = item["teams"]["home"]["name"]
         away_raw = item["teams"]["away"]["name"]
-
         home_team = normalize_team_name(home_raw)
         away_team = normalize_team_name(away_raw)
-
         fixture_date = item["fixture"]["date"]
+        fixture_id = item["fixture"]["id"]
 
-        fixtures.append((home_raw, away_raw, home_team, away_team, fixture_date))
+        fixtures.append({
+            "fixture_id": fixture_id,
+            "home_raw": home_raw,
+            "away_raw": away_raw,
+            "home_team": home_team,
+            "away_team": away_team,
+            "fixture_date": fixture_date
+        })
 
     return fixtures
+
+
+def parse_fixture_time(fixture_date_str):
+    return datetime.fromisoformat(fixture_date_str.replace("Z", "+00:00"))
+
+
+def is_within_next_hours(fixture_date_str, hours=12):
+    now = datetime.now(timezone.utc)
+    kickoff = parse_fixture_time(fixture_date_str)
+    diff = kickoff - now
+    return 0 <= diff.total_seconds() <= hours * 3600
+
+
+def load_sent_fixtures():
+    if not os.path.exists(SENT_FIXTURES_FILE):
+        return {}
+
+    try:
+        with open(SENT_FIXTURES_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_sent_fixtures(sent_data):
+    with open(SENT_FIXTURES_FILE, "w", encoding="utf-8") as f:
+        json.dump(sent_data, f, indent=2)
+
+
+def already_sent(sent_data, fixture_id):
+    return str(fixture_id) in sent_data
+
+
+def mark_as_sent(sent_data, fixture_id, payload):
+    sent_data[str(fixture_id)] = payload
 
 
 # Load historical CSV
@@ -99,7 +135,6 @@ df = pd.read_csv("data.csv")
 
 teams = {}
 
-# Use only played matches
 played_matches = df[df["FTHG"].notna() & df["FTAG"].notna()]
 
 for _, row in played_matches.iterrows():
@@ -143,6 +178,7 @@ for _, row in played_matches.iterrows():
         teams[away]["form_points"].append(1)
 
 results = []
+sent_data = load_sent_fixtures()
 
 print("\n--- LIVE FIXTURE PICKS ---\n")
 
@@ -154,7 +190,22 @@ except Exception as e:
     send_telegram(error_message)
     raise
 
-for raw_home, raw_away, home_team, away_team, fixture_date in fixtures:
+for fixture in fixtures:
+    fixture_id = fixture["fixture_id"]
+    raw_home = fixture["home_raw"]
+    raw_away = fixture["away_raw"]
+    home_team = fixture["home_team"]
+    away_team = fixture["away_team"]
+    fixture_date = fixture["fixture_date"]
+
+    # Only check matches starting in next 12 hours
+    if not is_within_next_hours(fixture_date, hours=12):
+        continue
+
+    # Prevent duplicate alerts
+    if already_sent(sent_data, fixture_id):
+        continue
+
     if home_team not in teams or away_team not in teams:
         continue
 
@@ -207,22 +258,23 @@ for raw_home, raw_away, home_team, away_team, fixture_date in fixtures:
 
     if (
         main_market == "Home Win"
-        and confidence >= 60
-        and rating_gap >= 25
+        and confidence >= 65
+        and rating_gap >= 30
         and form_gap >= 3
     ):
         passes_filter = True
 
     if (
         main_market == "Away Win"
-        and confidence >= 60
-        and rating_gap >= 25
+        and confidence >= 65
+        and rating_gap >= 30
         and form_gap <= -3
     ):
         passes_filter = True
 
     if passes_filter:
         results.append((
+            fixture_id,
             raw_home,
             raw_away,
             fixture_date,
@@ -240,12 +292,11 @@ for raw_home, raw_away, home_team, away_team, fixture_date in fixtures:
             form_gap
         ))
 
-results = sorted(results, key=lambda x: x[7], reverse=True)
+results = sorted(results, key=lambda x: x[8], reverse=True)
 
-if not results:
-    print("No strong live-fixture picks found today.")
-else:
+if results:
     for (
+        fixture_id,
         raw_home,
         raw_away,
         fixture_date,
@@ -264,22 +315,35 @@ else:
     ) in results[:2]:
 
         message = (
+            f"🚨 BET SIGNAL\n\n"
             f"{raw_home} vs {raw_away}\n"
-            f"Date: {fixture_date}\n\n"
-            f"Predicted score: {score}\n"
-            f"Correct score probability: {prob:.2%}\n"
+            f"Kickoff: {fixture_date}\n\n"
             f"Main market: {main_market}\n"
             f"Confidence: {confidence}%\n"
+            f"Safer market: {safer_market}\n\n"
+            f"Predicted score: {score}\n"
+            f"Correct score probability: {prob:.2%}\n"
             f"Home Win: {home_win_prob:.2%}\n"
             f"Draw: {draw_prob:.2%}\n"
             f"Away Win: {away_win_prob:.2%}\n"
             f"Rating gap: {rating_gap}%\n"
             f"Home form points (last 5): {home_form}\n"
             f"Away form points (last 5): {away_form}\n"
-            f"Form gap: {form_gap}\n"
-            f"Safer market: {safer_market}"
+            f"Form gap: {form_gap}"
         )
 
         print(message)
         print()
         send_telegram(message)
+
+        mark_as_sent(sent_data, fixture_id, {
+            "home": raw_home,
+            "away": raw_away,
+            "date": fixture_date,
+            "main_market": main_market,
+            "confidence": confidence
+        })
+
+    save_sent_fixtures(sent_data)
+else:
+    print("No strong live-fixture picks found today.")
