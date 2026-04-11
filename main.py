@@ -17,6 +17,16 @@ if not API_FOOTBALL_KEY:
 
 SENT_FIXTURES_FILE = "sent_fixtures.json"
 
+LEAGUES = [39, 140, 135, 78, 61]
+
+LEAGUE_NAMES = {
+    39: "Premier League",
+    140: "La Liga",
+    135: "Serie A",
+    78: "Bundesliga",
+    61: "Ligue 1",
+}
+
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -42,6 +52,7 @@ def get_current_season():
 
 def normalize_team_name(name):
     mapping = {
+        # England
         "Manchester City": "Man City",
         "Manchester United": "Man United",
         "Nottingham Forest": "Nott'm Forest",
@@ -52,6 +63,44 @@ def normalize_team_name(name):
         "Tottenham Hotspur": "Tottenham",
         "Leicester City": "Leicester",
         "Ipswich Town": "Ipswich",
+
+        # Spain
+        "Atletico Madrid": "Ath Madrid",
+        "Espanyol": "Espanol",
+        "Leganes": "Leganes",
+        "Alaves": "Alaves",
+
+        # Italy
+        "Inter": "Inter",
+        "AC Milan": "Milan",
+        "Juventus": "Juventus",
+        "AS Roma": "Roma",
+        "Lazio": "Lazio",
+        "Napoli": "Napoli",
+        "Fiorentina": "Fiorentina",
+        "Atalanta": "Atalanta",
+
+        # Germany
+        "Bayern Munich": "Bayern Munich",
+        "Borussia Dortmund": "Dortmund",
+        "Bayer Leverkusen": "Leverkusen",
+        "RB Leipzig": "RB Leipzig",
+        "Eintracht Frankfurt": "Ein Frankfurt",
+        "SC Freiburg": "Freiburg",
+        "VfB Stuttgart": "Stuttgart",
+        "Borussia Monchengladbach": "M'gladbach",
+        "Werder Bremen": "Werder Bremen",
+        "FSV Mainz 05": "Mainz",
+
+        # France
+        "Paris Saint Germain": "Paris SG",
+        "Olympique Marseille": "Marseille",
+        "Olympique Lyonnais": "Lyon",
+        "Lille": "Lille",
+        "Monaco": "Monaco",
+        "Nice": "Nice",
+        "Lens": "Lens",
+        "Rennes": "Rennes",
     }
     return mapping.get(name, name)
 
@@ -63,36 +112,40 @@ def get_upcoming_fixtures():
     headers = {
         "x-apisports-key": API_FOOTBALL_KEY
     }
-    params = {
-        "league": 39,   # Premier League
-        "season": season,
-        "next": 10
-    }
 
-    response = requests.get(url, headers=headers, params=params, timeout=30)
-    response.raise_for_status()
-    data = response.json()
+    all_fixtures = []
 
-    fixtures = []
+    for league_id in LEAGUES:
+        params = {
+            "league": league_id,
+            "season": season,
+            "next": 5
+        }
 
-    for item in data.get("response", []):
-        home_raw = item["teams"]["home"]["name"]
-        away_raw = item["teams"]["away"]["name"]
-        home_team = normalize_team_name(home_raw)
-        away_team = normalize_team_name(away_raw)
-        fixture_date = item["fixture"]["date"]
-        fixture_id = item["fixture"]["id"]
+        response = requests.get(url, headers=headers, params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
 
-        fixtures.append({
-            "fixture_id": fixture_id,
-            "home_raw": home_raw,
-            "away_raw": away_raw,
-            "home_team": home_team,
-            "away_team": away_team,
-            "fixture_date": fixture_date
-        })
+        for item in data.get("response", []):
+            home_raw = item["teams"]["home"]["name"]
+            away_raw = item["teams"]["away"]["name"]
+            home_team = normalize_team_name(home_raw)
+            away_team = normalize_team_name(away_raw)
+            fixture_date = item["fixture"]["date"]
+            fixture_id = item["fixture"]["id"]
 
-    return fixtures
+            all_fixtures.append({
+                "fixture_id": fixture_id,
+                "league_id": league_id,
+                "league_name": LEAGUE_NAMES.get(league_id, "Unknown League"),
+                "home_raw": home_raw,
+                "away_raw": away_raw,
+                "home_team": home_team,
+                "away_team": away_team,
+                "fixture_date": fixture_date
+            })
+
+    return all_fixtures
 
 
 def parse_fixture_time(fixture_date_str):
@@ -192,17 +245,16 @@ except Exception as e:
 
 for fixture in fixtures:
     fixture_id = fixture["fixture_id"]
+    league_name = fixture["league_name"]
     raw_home = fixture["home_raw"]
     raw_away = fixture["away_raw"]
     home_team = fixture["home_team"]
     away_team = fixture["away_team"]
     fixture_date = fixture["fixture_date"]
 
-    # Only check matches starting in next 12 hours
     if not is_within_next_hours(fixture_date, hours=12):
         continue
 
-    # Prevent duplicate alerts
     if already_sent(sent_data, fixture_id):
         continue
 
@@ -275,6 +327,7 @@ for fixture in fixtures:
     if passes_filter:
         results.append((
             fixture_id,
+            league_name,
             raw_home,
             raw_away,
             fixture_date,
@@ -292,11 +345,12 @@ for fixture in fixtures:
             form_gap
         ))
 
-results = sorted(results, key=lambda x: x[8], reverse=True)
+results = sorted(results, key=lambda x: x[9], reverse=True)
 
 if results:
     for (
         fixture_id,
+        league_name,
         raw_home,
         raw_away,
         fixture_date,
@@ -312,10 +366,11 @@ if results:
         home_form,
         away_form,
         form_gap
-    ) in results[:2]:
+    ) in results[:5]:
 
         message = (
             f"🚨 BET SIGNAL\n\n"
+            f"🏆 {league_name}\n"
             f"{raw_home} vs {raw_away}\n"
             f"Kickoff: {fixture_date}\n\n"
             f"Main market: {main_market}\n"
@@ -337,6 +392,7 @@ if results:
         send_telegram(message)
 
         mark_as_sent(sent_data, fixture_id, {
+            "league": league_name,
             "home": raw_home,
             "away": raw_away,
             "date": fixture_date,
