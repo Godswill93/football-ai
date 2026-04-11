@@ -1,10 +1,18 @@
 import os
+from datetime import datetime
 import pandas as pd
 import requests
 from model import predict_score
 
-BOT_TOKEN = "8516344376:AAE-h-C3Y2Ba2OPRCb8S3Gk6CPkWEzNonHM"
-CHAT_ID = "6110133218"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY")
+
+if not BOT_TOKEN or not CHAT_ID:
+    raise ValueError("Missing BOT_TOKEN or CHAT_ID")
+
+if not API_FOOTBALL_KEY:
+    raise ValueError("Missing API_FOOTBALL_KEY")
 
 
 def send_telegram(message):
@@ -13,10 +21,65 @@ def send_telegram(message):
         "chat_id": CHAT_ID,
         "text": message
     }
-    requests.post(url, data=data)
+    requests.post(url, data=data, timeout=30)
 
 
-# Load CSV
+def get_current_season():
+    today = datetime.utcnow()
+    return today.year if today.month >= 7 else today.year - 1
+
+
+def normalize_team_name(name):
+    mapping = {
+        "Manchester City": "Man City",
+        "Manchester United": "Man United",
+        "Nottingham Forest": "Nott'm Forest",
+        "Newcastle": "Newcastle",
+        "Tottenham": "Tottenham",
+        "Brighton": "Brighton",
+        "Brighton & Hove Albion": "Brighton",
+        "Wolverhampton Wanderers": "Wolves",
+        "West Ham United": "West Ham",
+        "Leicester": "Leicester",
+        "Ipswich": "Ipswich",
+    }
+    return mapping.get(name, name)
+
+
+def get_upcoming_fixtures():
+    season = get_current_season()
+
+    url = "https://v3.football.api-sports.io/fixtures"
+    headers = {
+        "x-apisports-key": API_FOOTBALL_KEY
+    }
+    params = {
+        "league": 39,      # Premier League
+        "season": season,
+        "next": 10
+    }
+
+    response = requests.get(url, headers=headers, params=params, timeout=30)
+    response.raise_for_status()
+    data = response.json()
+
+    fixtures = []
+
+    for item in data.get("response", []):
+        home_raw = item["teams"]["home"]["name"]
+        away_raw = item["teams"]["away"]["name"]
+
+        home_team = normalize_team_name(home_raw)
+        away_team = normalize_team_name(away_raw)
+
+        fixture_date = item["fixture"]["date"]
+
+        fixtures.append((home_raw, away_raw, home_team, away_team, fixture_date))
+
+    return fixtures
+
+
+# Load historical CSV
 df = pd.read_csv("data.csv")
 
 teams = {}
@@ -54,7 +117,6 @@ for _, row in played_matches.iterrows():
     teams[away]["away_scored"].append(ag)
     teams[away]["away_conceded"].append(hg)
 
-    # Form points
     if hg > ag:
         teams[home]["form_points"].append(3)
         teams[away]["form_points"].append(0)
@@ -65,19 +127,19 @@ for _, row in played_matches.iterrows():
         teams[home]["form_points"].append(1)
         teams[away]["form_points"].append(1)
 
-fixtures = [
-    ("Liverpool", "Everton"),
-    ("Arsenal", "Crystal Palace"),
-    ("Chelsea", "Bournemouth"),
-    ("Man City", "Aston Villa"),
-    ("Tottenham", "Nott'm Forest")
-]
-
 results = []
 
-print("\n--- FILTERED PICKS (FORM + RATING GAP VERSION) ---\n")
+print("\n--- LIVE FIXTURE PICKS ---\n")
 
-for home_team, away_team in fixtures:
+try:
+    fixtures = get_upcoming_fixtures()
+except Exception as e:
+    error_message = f"API error: {str(e)}"
+    print(error_message)
+    send_telegram(error_message)
+    raise
+
+for raw_home, raw_away, home_team, away_team, fixture_date in fixtures:
     if home_team not in teams or away_team not in teams:
         continue
 
@@ -89,20 +151,17 @@ for home_team, away_team in fixtures:
     ):
         continue
 
-    # Last 5 home/away form
     home_attack = sum(teams[home_team]["home_scored"][-5:]) / 5
     away_defence = sum(teams[away_team]["away_conceded"][-5:]) / 5
 
     away_attack = sum(teams[away_team]["away_scored"][-5:]) / 5
     home_defence = sum(teams[home_team]["home_conceded"][-5:]) / 5
 
-    # Home advantage
     home_xg = ((home_attack + away_defence) / 2) * 1.10
     away_xg = ((away_attack + home_defence) / 2) * 0.90
 
     score, prob, _, home_win_prob, draw_prob, away_win_prob = predict_score(home_xg, away_xg)
 
-    # Last 5 form points
     home_form = sum(teams[home_team]["form_points"][-5:])
     away_form = sum(teams[away_team]["form_points"][-5:])
     form_gap = home_form - away_form
@@ -129,7 +188,6 @@ for home_team, away_team in fixtures:
 
     rating_gap = abs(home_win_prob - away_win_prob) * 100
 
-    # Stronger filter
     passes_filter = False
 
     if (
@@ -150,8 +208,9 @@ for home_team, away_team in fixtures:
 
     if passes_filter:
         results.append((
-            home_team,
-            away_team,
+            raw_home,
+            raw_away,
+            fixture_date,
             score,
             prob,
             safer_market,
@@ -166,16 +225,17 @@ for home_team, away_team in fixtures:
             form_gap
         ))
 
-results = sorted(results, key=lambda x: x[6], reverse=True)
+results = sorted(results, key=lambda x: x[7], reverse=True)
 
 if not results:
-    message = "No strong picks found today."
+    message = "No strong live-fixture picks found today."
     print(message)
     send_telegram(message)
 else:
     for (
-        home_team,
-        away_team,
+        raw_home,
+        raw_away,
+        fixture_date,
         score,
         prob,
         safer_market,
@@ -191,7 +251,8 @@ else:
     ) in results[:2]:
 
         message = (
-            f"{home_team} vs {away_team}\n\n"
+            f"{raw_home} vs {raw_away}\n"
+            f"Date: {fixture_date}\n\n"
             f"Predicted score: {score}\n"
             f"Correct score probability: {prob:.2%}\n"
             f"Main market: {main_market}\n"
