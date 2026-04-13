@@ -103,11 +103,8 @@ def normalize_team_name(name):
     }
     return mapping.get(name, name)
 
-
 def get_upcoming_fixtures():
-    now = datetime.now(timezone.utc)
-    date_from = now.date().isoformat()
-    date_to = (now + timedelta(days=3)).date().isoformat()
+    season = get_current_season()
 
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
@@ -117,18 +114,16 @@ def get_upcoming_fixtures():
     for league_id in LEAGUES:
         params = {
             "league": league_id,
-            "season": get_current_season(),
-            "from": date_from,
-            "to": date_to,
-            "status": "NS"
+            "season": season,
+            "next": 20   # 🔥 THIS IS THE FIX
         }
 
         response = requests.get(url, headers=headers, params=params, timeout=30)
         response.raise_for_status()
         data = response.json()
 
-        league_count = len(data.get("response", []))
-        print(f"League {league_id} fixtures found: {league_count}")
+        count = len(data.get("response", []))
+        print(f"League {league_id} fixtures found: {count}")
 
         for item in data.get("response", []):
             home_raw = item["teams"]["home"]["name"]
