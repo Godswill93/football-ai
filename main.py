@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import pandas as pd
 import requests
 from model import predict_score
@@ -24,7 +24,7 @@ LEAGUE_NAMES = {
     61: "Ligue 1",
 }
 
-LOOKAHEAD_HOURS = 48
+LOOKAHEAD_HOURS = 72
 MAX_PICKS = 5
 
 MIN_CONFIDENCE = 58
@@ -48,11 +48,6 @@ def send_telegram(message):
             print("Telegram sent successfully")
     except Exception as e:
         print("Telegram failed:", e)
-
-
-def get_current_season():
-    now = datetime.now(timezone.utc)
-    return now.year if now.month >= 7 else now.year - 1
 
 
 def normalize_team_name(name):
@@ -81,6 +76,7 @@ def normalize_team_name(name):
         "AC Milan": "Milan",
         "AS Roma": "Roma",
         "Hellas Verona": "Verona",
+        "Internazionale": "Inter",
 
         # Germany
         "Borussia Dortmund": "Dortmund",
@@ -105,40 +101,52 @@ def normalize_team_name(name):
 
 
 def get_upcoming_fixtures():
-    season = get_current_season()
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
 
+    current_day = datetime.now(timezone.utc).date()
     all_fixtures = []
+    seen_fixture_ids = set()
 
-    for league_id in LEAGUES:
-        params = {
-            "league": league_id,
-            "season": season,
-            "next": 10
-        }
+    for _ in range(3):  # today + next 2 days
+        date_str = current_day.isoformat()
 
-        response = requests.get(url, headers=headers, params=params, timeout=30)
-        response.raise_for_status()
-        data = response.json()
+        for league_id in LEAGUES:
+            params = {
+                "league": league_id,
+                "date": date_str
+            }
 
-        count = len(data.get("response", []))
-        print(f"League {league_id} fixtures found: {count}")
+            response = requests.get(url, headers=headers, params=params, timeout=30)
+            response.raise_for_status()
+            data = response.json()
 
-        for item in data.get("response", []):
-            home_raw = item["teams"]["home"]["name"]
-            away_raw = item["teams"]["away"]["name"]
+            count = len(data.get("response", []))
+            print(f"{date_str} | League {league_id} fixtures: {count}")
 
-            all_fixtures.append({
-                "fixture_id": item["fixture"]["id"],
-                "league_id": league_id,
-                "league_name": LEAGUE_NAMES.get(league_id, "Unknown League"),
-                "home_raw": home_raw,
-                "away_raw": away_raw,
-                "home_team": normalize_team_name(home_raw),
-                "away_team": normalize_team_name(away_raw),
-                "fixture_date": item["fixture"]["date"]
-            })
+            for item in data.get("response", []):
+                fixture_id = item["fixture"]["id"]
+
+                if fixture_id in seen_fixture_ids:
+                    continue
+
+                seen_fixture_ids.add(fixture_id)
+
+                home_raw = item["teams"]["home"]["name"]
+                away_raw = item["teams"]["away"]["name"]
+
+                all_fixtures.append({
+                    "fixture_id": fixture_id,
+                    "league_id": league_id,
+                    "league_name": LEAGUE_NAMES.get(league_id, "Unknown League"),
+                    "home_raw": home_raw,
+                    "away_raw": away_raw,
+                    "home_team": normalize_team_name(home_raw),
+                    "away_team": normalize_team_name(away_raw),
+                    "fixture_date": item["fixture"]["date"]
+                })
+
+        current_day = current_day + timedelta(days=1)
 
     return all_fixtures
 
@@ -147,7 +155,7 @@ def parse_fixture_time(fixture_date_str):
     return datetime.fromisoformat(fixture_date_str.replace("Z", "+00:00"))
 
 
-def is_within_next_hours(fixture_date_str, hours=48):
+def is_within_next_hours(fixture_date_str, hours=72):
     now = datetime.now(timezone.utc)
     kickoff = parse_fixture_time(fixture_date_str)
     diff = kickoff - now
