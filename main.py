@@ -252,11 +252,11 @@ for fixture in fixtures:
     away_team = fixture["away_team"]
     fixture_date = fixture["fixture_date"]
 
-    if not is_within_next_hours(fixture_date, hours=12):
+    if not is_within_next_hours(fixture_date, hours=36):
         continue
 
-    if already_sent(sent_data, fixture_id):
-        continue
+    #if already_sent(sent_data, fixture_id):
+    #   continue
 
     if home_team not in teams or away_team not in teams:
         continue
@@ -310,17 +310,17 @@ for fixture in fixtures:
 
     if (
         main_market == "Home Win"
-        and confidence >= 62
-        and rating_gap >= 25
-        and form_gap >= 2
+        and confidence >= 58
+        and rating_gap >= 20
+        and form_gap >= 1
     ):
         passes_filter = True
 
     if (
         main_market == "Away Win"
-        and confidence >= 62
-        and rating_gap >= 25
-        and form_gap <= -2
+        and confidence >= 58
+        and rating_gap >= 20
+        and form_gap <= -1
     ):
         passes_filter = True
 
