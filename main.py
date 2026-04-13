@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import pandas as pd
 import requests
 from model import predict_score
@@ -25,7 +25,6 @@ LEAGUE_NAMES = {
 }
 
 LOOKAHEAD_HOURS = 48
-FIXTURES_PER_LEAGUE = 6
 MAX_PICKS = 5
 
 MIN_CONFIDENCE = 58
@@ -106,7 +105,10 @@ def normalize_team_name(name):
 
 
 def get_upcoming_fixtures():
-    season = get_current_season()
+    now = datetime.now(timezone.utc)
+    date_from = now.date().isoformat()
+    date_to = (now + timedelta(days=3)).date().isoformat()
+
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
 
@@ -115,13 +117,18 @@ def get_upcoming_fixtures():
     for league_id in LEAGUES:
         params = {
             "league": league_id,
-            "season": season,
-            "next": FIXTURES_PER_LEAGUE
+            "season": get_current_season(),
+            "from": date_from,
+            "to": date_to,
+            "status": "NS"
         }
 
         response = requests.get(url, headers=headers, params=params, timeout=30)
         response.raise_for_status()
         data = response.json()
+
+        league_count = len(data.get("response", []))
+        print(f"League {league_id} fixtures found: {league_count}")
 
         for item in data.get("response", []):
             home_raw = item["teams"]["home"]["name"]
