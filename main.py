@@ -1,6 +1,5 @@
 import os
 from datetime import datetime, timezone
-import json
 import pandas as pd
 import requests
 from model import predict_score
@@ -15,8 +14,6 @@ if not BOT_TOKEN or not CHAT_ID:
 if not API_FOOTBALL_KEY:
     raise ValueError("Missing API_FOOTBALL_KEY")
 
-SENT_FIXTURES_FILE = "sent_fixtures.json"
-
 LEAGUES = [39, 140, 135, 78, 61]
 
 LEAGUE_NAMES = {
@@ -26,6 +23,15 @@ LEAGUE_NAMES = {
     78: "Bundesliga",
     61: "Ligue 1",
 }
+
+LOOKAHEAD_HOURS = 48
+FIXTURES_PER_LEAGUE = 6
+MAX_PICKS = 5
+
+MIN_CONFIDENCE = 58
+MIN_RATING_GAP = 20
+MIN_HOME_FORM_GAP = 1
+MIN_AWAY_FORM_GAP = -1
 
 
 def send_telegram(message):
@@ -69,49 +75,40 @@ def normalize_team_name(name):
         "Espanyol": "Espanol",
         "Leganes": "Leganes",
         "Alaves": "Alaves",
+        "Real Betis": "Betis",
+        "Real Sociedad": "Sociedad",
 
         # Italy
-        "Inter": "Inter",
         "AC Milan": "Milan",
-        "Juventus": "Juventus",
         "AS Roma": "Roma",
-        "Lazio": "Lazio",
-        "Napoli": "Napoli",
-        "Fiorentina": "Fiorentina",
-        "Atalanta": "Atalanta",
+        "Hellas Verona": "Verona",
 
         # Germany
-        "Bayern Munich": "Bayern Munich",
         "Borussia Dortmund": "Dortmund",
         "Bayer Leverkusen": "Leverkusen",
-        "RB Leipzig": "RB Leipzig",
         "Eintracht Frankfurt": "Ein Frankfurt",
-        "SC Freiburg": "Freiburg",
-        "VfB Stuttgart": "Stuttgart",
         "Borussia Monchengladbach": "M'gladbach",
-        "Werder Bremen": "Werder Bremen",
         "FSV Mainz 05": "Mainz",
+        "FC Augsburg": "Augsburg",
+        "Union Berlin": "Union Berlin",
+        "VfL Wolfsburg": "Wolfsburg",
+        "1899 Hoffenheim": "Hoffenheim",
 
         # France
         "Paris Saint Germain": "Paris SG",
         "Olympique Marseille": "Marseille",
         "Olympique Lyonnais": "Lyon",
-        "Lille": "Lille",
-        "Monaco": "Monaco",
-        "Nice": "Nice",
-        "Lens": "Lens",
-        "Rennes": "Rennes",
+        "Stade Rennais FC": "Rennes",
+        "LOSC Lille": "Lille",
+        "OGC Nice": "Nice",
     }
     return mapping.get(name, name)
 
 
 def get_upcoming_fixtures():
     season = get_current_season()
-
     url = "https://v3.football.api-sports.io/fixtures"
-    headers = {
-        "x-apisports-key": API_FOOTBALL_KEY
-    }
+    headers = {"x-apisports-key": API_FOOTBALL_KEY}
 
     all_fixtures = []
 
@@ -119,7 +116,7 @@ def get_upcoming_fixtures():
         params = {
             "league": league_id,
             "season": season,
-            "next": 5
+            "next": FIXTURES_PER_LEAGUE
         }
 
         response = requests.get(url, headers=headers, params=params, timeout=30)
@@ -129,20 +126,16 @@ def get_upcoming_fixtures():
         for item in data.get("response", []):
             home_raw = item["teams"]["home"]["name"]
             away_raw = item["teams"]["away"]["name"]
-            home_team = normalize_team_name(home_raw)
-            away_team = normalize_team_name(away_raw)
-            fixture_date = item["fixture"]["date"]
-            fixture_id = item["fixture"]["id"]
 
             all_fixtures.append({
-                "fixture_id": fixture_id,
+                "fixture_id": item["fixture"]["id"],
                 "league_id": league_id,
                 "league_name": LEAGUE_NAMES.get(league_id, "Unknown League"),
                 "home_raw": home_raw,
                 "away_raw": away_raw,
-                "home_team": home_team,
-                "away_team": away_team,
-                "fixture_date": fixture_date
+                "home_team": normalize_team_name(home_raw),
+                "away_team": normalize_team_name(away_raw),
+                "fixture_date": item["fixture"]["date"]
             })
 
     return all_fixtures
@@ -152,43 +145,18 @@ def parse_fixture_time(fixture_date_str):
     return datetime.fromisoformat(fixture_date_str.replace("Z", "+00:00"))
 
 
-def is_within_next_hours(fixture_date_str, hours=12):
+def is_within_next_hours(fixture_date_str, hours=48):
     now = datetime.now(timezone.utc)
     kickoff = parse_fixture_time(fixture_date_str)
     diff = kickoff - now
     return 0 <= diff.total_seconds() <= hours * 3600
 
 
-def load_sent_fixtures():
-    if not os.path.exists(SENT_FIXTURES_FILE):
-        return {}
-
-    try:
-        with open(SENT_FIXTURES_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
-def save_sent_fixtures(sent_data):
-    with open(SENT_FIXTURES_FILE, "w", encoding="utf-8") as f:
-        json.dump(sent_data, f, indent=2)
-
-
-def already_sent(sent_data, fixture_id):
-    return str(fixture_id) in sent_data
-
-
-def mark_as_sent(sent_data, fixture_id, payload):
-    sent_data[str(fixture_id)] = payload
-
-
 # Load historical CSV
 df = pd.read_csv("data.csv")
+played_matches = df[df["FTHG"].notna() & df["FTAG"].notna()]
 
 teams = {}
-
-played_matches = df[df["FTHG"].notna() & df["FTAG"].notna()]
 
 for _, row in played_matches.iterrows():
     home = row["HomeTeam"]
@@ -230,13 +198,21 @@ for _, row in played_matches.iterrows():
         teams[home]["form_points"].append(1)
         teams[away]["form_points"].append(1)
 
-results = []
-sent_data = load_sent_fixtures()
-
 print("\n--- LIVE FIXTURE PICKS ---\n")
+
+skip_counts = {
+    "outside_window": 0,
+    "team_not_found": 0,
+    "not_enough_data": 0,
+    "filter_failed": 0,
+    "passed": 0,
+}
+
+results = []
 
 try:
     fixtures = get_upcoming_fixtures()
+    print(f"Fetched fixtures: {len(fixtures)}")
 except Exception as e:
     error_message = f"API error: {str(e)}"
     print(error_message)
@@ -252,13 +228,14 @@ for fixture in fixtures:
     away_team = fixture["away_team"]
     fixture_date = fixture["fixture_date"]
 
-    if not is_within_next_hours(fixture_date, hours=36):
+    print(f"Checking: {league_name} | {raw_home} vs {raw_away}")
+
+    if not is_within_next_hours(fixture_date, hours=LOOKAHEAD_HOURS):
+        skip_counts["outside_window"] += 1
         continue
 
-    #if already_sent(sent_data, fixture_id):
-    #   continue
-
     if home_team not in teams or away_team not in teams:
+        skip_counts["team_not_found"] += 1
         continue
 
     if (
@@ -267,6 +244,7 @@ for fixture in fixtures:
         or len(teams[home_team]["form_points"]) < 5
         or len(teams[away_team]["form_points"]) < 5
     ):
+        skip_counts["not_enough_data"] += 1
         continue
 
     home_attack = sum(teams[home_team]["home_scored"][-5:]) / 5
@@ -310,42 +288,51 @@ for fixture in fixtures:
 
     if (
         main_market == "Home Win"
-        and confidence >= 58
-        and rating_gap >= 20
-        and form_gap >= 1
+        and confidence >= MIN_CONFIDENCE
+        and rating_gap >= MIN_RATING_GAP
+        and form_gap >= MIN_HOME_FORM_GAP
     ):
         passes_filter = True
 
     if (
         main_market == "Away Win"
-        and confidence >= 58
-        and rating_gap >= 20
-        and form_gap <= -1
+        and confidence >= MIN_CONFIDENCE
+        and rating_gap >= MIN_RATING_GAP
+        and form_gap <= MIN_AWAY_FORM_GAP
     ):
         passes_filter = True
 
-    if passes_filter:
-        results.append((
-            fixture_id,
-            league_name,
-            raw_home,
-            raw_away,
-            fixture_date,
-            score,
-            prob,
-            safer_market,
-            main_market,
-            confidence,
-            home_win_prob,
-            draw_prob,
-            away_win_prob,
-            round(rating_gap, 1),
-            home_form,
-            away_form,
-            form_gap
-        ))
+    if not passes_filter:
+        skip_counts["filter_failed"] += 1
+        continue
+
+    skip_counts["passed"] += 1
+
+    results.append((
+        fixture_id,
+        league_name,
+        raw_home,
+        raw_away,
+        fixture_date,
+        score,
+        prob,
+        safer_market,
+        main_market,
+        confidence,
+        home_win_prob,
+        draw_prob,
+        away_win_prob,
+        round(rating_gap, 1),
+        home_form,
+        away_form,
+        form_gap
+    ))
 
 results = sorted(results, key=lambda x: x[9], reverse=True)
+
+print("\n--- DEBUG SUMMARY ---")
+for key, value in skip_counts.items():
+    print(f"{key}: {value}")
 
 if results:
     for (
@@ -366,7 +353,7 @@ if results:
         home_form,
         away_form,
         form_gap
-    ) in results[:5]:
+    ) in results[:MAX_PICKS]:
 
         message = (
             f"🚨 BET SIGNAL\n\n"
@@ -387,19 +374,7 @@ if results:
             f"Form gap: {form_gap}"
         )
 
-        print(message)
-        print()
+        print("\n" + message + "\n")
         send_telegram(message)
-
-        mark_as_sent(sent_data, fixture_id, {
-            "league": league_name,
-            "home": raw_home,
-            "away": raw_away,
-            "date": fixture_date,
-            "main_market": main_market,
-            "confidence": confidence
-        })
-
-    save_sent_fixtures(sent_data)
 else:
     print("No strong live-fixture picks found today.")
