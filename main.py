@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 import pandas as pd
 import requests
 from model import predict_score
@@ -24,7 +24,7 @@ LEAGUE_NAMES = {
     61: "Ligue 1",
 }
 
-LOOKAHEAD_HOURS = 72
+LOOKAHEAD_HOURS = 36
 MAX_PICKS = 5
 
 MIN_CONFIDENCE = 58
@@ -104,25 +104,28 @@ def get_upcoming_fixtures():
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
 
-    current_day = datetime.now(timezone.utc).date()
+    today_str = datetime.now(timezone.utc).date().isoformat()
     all_fixtures = []
     seen_fixture_ids = set()
 
-    for _ in range(3):  # today + next 2 days
-        date_str = current_day.isoformat()
+    for league_id in LEAGUES:
+        params = {
+            "league": league_id,
+            "date": today_str
+        }
 
-        for league_id in LEAGUES:
-            params = {
-                "league": league_id,
-                "date": date_str
-            }
-
+        try:
             response = requests.get(url, headers=headers, params=params, timeout=30)
+
+            if response.status_code == 429:
+                print(f"Rate limited on league {league_id}. Skipping.")
+                continue
+
             response.raise_for_status()
             data = response.json()
 
             count = len(data.get("response", []))
-            print(f"{date_str} | League {league_id} fixtures: {count}")
+            print(f"{today_str} | League {league_id} fixtures: {count}")
 
             for item in data.get("response", []):
                 fixture_id = item["fixture"]["id"]
@@ -146,7 +149,9 @@ def get_upcoming_fixtures():
                     "fixture_date": item["fixture"]["date"]
                 })
 
-        current_day = current_day + timedelta(days=1)
+        except Exception as e:
+            print(f"Error fetching league {league_id}: {e}")
+            continue
 
     return all_fixtures
 
@@ -155,7 +160,7 @@ def parse_fixture_time(fixture_date_str):
     return datetime.fromisoformat(fixture_date_str.replace("Z", "+00:00"))
 
 
-def is_within_next_hours(fixture_date_str, hours=72):
+def is_within_next_hours(fixture_date_str, hours=36):
     now = datetime.now(timezone.utc)
     kickoff = parse_fixture_time(fixture_date_str)
     diff = kickoff - now
@@ -220,14 +225,8 @@ skip_counts = {
 
 results = []
 
-try:
-    fixtures = get_upcoming_fixtures()
-    print(f"Fetched fixtures: {len(fixtures)}")
-except Exception as e:
-    error_message = f"API error: {str(e)}"
-    print(error_message)
-    send_telegram(error_message)
-    raise
+fixtures = get_upcoming_fixtures()
+print(f"Fetched fixtures: {len(fixtures)}")
 
 for fixture in fixtures:
     fixture_id = fixture["fixture_id"]
