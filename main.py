@@ -50,13 +50,9 @@ def send_telegram(message):
         print("Telegram failed:", e)
 
 
-def test_api():
-    url = "https://v3.football.api-sports.io/status"
-    headers = {"x-apisports-key": API_FOOTBALL_KEY}
-
-    response = requests.get(url, headers=headers, timeout=30)
-    print("API STATUS CODE:", response.status_code)
-    print("API STATUS RESPONSE:", response.text)
+def get_current_season():
+    now = datetime.now(timezone.utc)
+    return now.year if now.month >= 7 else now.year - 1
 
 
 def normalize_team_name(name):
@@ -109,6 +105,7 @@ def normalize_team_name(name):
 
 
 def get_upcoming_fixtures():
+    season = get_current_season()
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
 
@@ -117,7 +114,8 @@ def get_upcoming_fixtures():
     for league_id in LEAGUES:
         params = {
             "league": league_id,
-            "season": 2023
+            "season": season,
+            "next": 10
         }
 
         response = requests.get(url, headers=headers, params=params, timeout=30)
@@ -202,9 +200,6 @@ for _, row in played_matches.iterrows():
         teams[home]["form_points"].append(1)
         teams[away]["form_points"].append(1)
 
-print("\n--- API TEST ---\n")
-test_api()
-
 print("\n--- LIVE FIXTURE PICKS ---\n")
 
 skip_counts = {
@@ -237,10 +232,9 @@ for fixture in fixtures:
 
     print(f"Checking: {league_name} | {raw_home} vs {raw_away}")
 
-    # TEMP: disable time filter for testing
-# if not is_within_next_hours(fixture_date, hours=LOOKAHEAD_HOURS):
-#     skip_counts["outside_window"] += 1
-#     continue
+    if not is_within_next_hours(fixture_date, hours=LOOKAHEAD_HOURS):
+        skip_counts["outside_window"] += 1
+        continue
 
     if home_team not in teams or away_team not in teams:
         skip_counts["team_not_found"] += 1
