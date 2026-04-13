@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 import pandas as pd
 import requests
 from model import predict_score
@@ -50,9 +50,13 @@ def send_telegram(message):
         print("Telegram failed:", e)
 
 
-def get_current_season():
-    now = datetime.now(timezone.utc)
-    return now.year if now.month >= 7 else now.year - 1
+def test_api():
+    url = "https://v3.football.api-sports.io/status"
+    headers = {"x-apisports-key": API_FOOTBALL_KEY}
+
+    response = requests.get(url, headers=headers, timeout=30)
+    print("API STATUS CODE:", response.status_code)
+    print("API STATUS RESPONSE:", response.text)
 
 
 def normalize_team_name(name):
@@ -103,9 +107,8 @@ def normalize_team_name(name):
     }
     return mapping.get(name, name)
 
-def get_upcoming_fixtures():
-    season = get_current_season()
 
+def get_upcoming_fixtures():
     url = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
 
@@ -114,8 +117,7 @@ def get_upcoming_fixtures():
     for league_id in LEAGUES:
         params = {
             "league": league_id,
-            "season": season,
-            "next": 20   # 🔥 THIS IS THE FIX
+            "season": 2023
         }
 
         response = requests.get(url, headers=headers, params=params, timeout=30)
@@ -199,6 +201,9 @@ for _, row in played_matches.iterrows():
     else:
         teams[home]["form_points"].append(1)
         teams[away]["form_points"].append(1)
+
+print("\n--- API TEST ---\n")
+test_api()
 
 print("\n--- LIVE FIXTURE PICKS ---\n")
 
