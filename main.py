@@ -237,9 +237,10 @@ for fixture in fixtures:
 
     print(f"Checking: {league_name} | {raw_home} vs {raw_away}")
 
-    if not is_within_next_hours(fixture_date, hours=LOOKAHEAD_HOURS):
-        skip_counts["outside_window"] += 1
-        continue
+    # TEMP: disable time filter for testing
+# if not is_within_next_hours(fixture_date, hours=LOOKAHEAD_HOURS):
+#     skip_counts["outside_window"] += 1
+#     continue
 
     if home_team not in teams or away_team not in teams:
         skip_counts["team_not_found"] += 1
